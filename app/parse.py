@@ -1,11 +1,15 @@
-import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+
+import requests
 import csv
-import time
+
 from dataclasses import dataclass, fields, astuple
 from urllib.parse import urljoin
 
-import httpx
 from bs4 import BeautifulSoup, ResultSet, Tag
+
+from app.utils import format_name
 
 
 @dataclass
@@ -15,9 +19,19 @@ class Quote:
     tags: list[str]
 
 
-QUOTE_COLUMNS = [f.name for f in fields(Quote)]
+@dataclass
+class Author:
+    name: str
+    date_of_birth: datetime
+    location: str
+    biography: str
+
+
+QUOTE_COLUMNS = [field.name for field in fields(Quote)]
+AUTHOR_COLUMNS = [field.name for field in fields(Author)]
 
 BASE_URL = "https://quotes.toscrape.com"
+AUTHOR_URL = f"{BASE_URL}/author"
 
 
 def parse_single_quote(soup: Tag) -> Quote:
@@ -32,23 +46,25 @@ def parse_page_quotes(quotes: ResultSet[Tag]) -> list[Quote]:
     return [parse_single_quote(soup) for soup in quotes]
 
 
-async def get_page_quotes() -> list[Quote]:
-    page_num = 1
-    all_quotes = []
-    async with httpx.AsyncClient() as client:
-        while True:
-            request_url = urljoin(BASE_URL, f"/page/{page_num}/")
-            response = await client.get(request_url)
-            soup = BeautifulSoup(response.content, "html.parser")
-            page_quotes = soup.find_all("div", class_="quote")
+def parse_author_page(soup: Tag) -> Author:
+    name = soup.select_one(".author-title").text
+    author_born_date = soup.select_one(".author-born-date").text
+    date_of_birth = datetime.strptime(str(author_born_date), "%B %d, %Y")
+    location = soup.select_one(".author-born-location").text.replace("in ", "")
+    biography = soup.select_one(".author-description").text
+    return Author(
+        name=name,
+        date_of_birth=date_of_birth,
+        location=location,
+        biography=biography
+    )
 
-            if not page_quotes:
-                break
 
-            all_quotes.extend(parse_page_quotes(page_quotes))
-            page_num += 1
-
-    return all_quotes
+def fetch_author(client: requests.Session, author_name: str) -> Author:
+    url = f"{AUTHOR_URL}/{format_name(author_name)}"
+    response = client.get(url)
+    soup = BeautifulSoup(response.content, "html.parser")
+    return parse_author_page(soup)
 
 
 def write_quotes_to_csv(output_csv_path: str, quotes: list[Quote]) -> None:
@@ -58,13 +74,52 @@ def write_quotes_to_csv(output_csv_path: str, quotes: list[Quote]) -> None:
         writer.writerows([astuple(quote) for quote in quotes])
 
 
-async def main(output_csv_path: str) -> None:
-    quotes = await get_page_quotes()
+def write_authors_to_csv(output_csv_path: str, authors: list[Author]) -> None:
+    with open(output_csv_path, "w") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(AUTHOR_COLUMNS)
+        writer.writerows([astuple(author) for author in authors])
+
+
+def get_page_content() -> tuple[list[Quote], list[Author]]:
+    page_num = 1
+    all_quotes = []
+    all_authors = []
+
+    author_names = {}
+
+    with requests.Session() as client:
+        while True:
+            request_url = urljoin(BASE_URL, f"/page/{page_num}/")
+            response = client.get(request_url)
+            soup = BeautifulSoup(response.content, "html.parser")
+            page_quotes = soup.find_all("div", class_="quote")
+
+            if not page_quotes:
+                break
+
+            quotes_portion = parse_page_quotes(page_quotes)
+            all_quotes.extend(quotes_portion)
+
+            for quote in quotes_portion:
+                author_names[quote.author] = None
+
+            page_num += 1
+
+    with requests.Session() as client:
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            all_authors = executor.map(
+                lambda name: fetch_author(client, name),
+                author_names.keys()
+            )
+    return all_quotes, list(all_authors)
+
+
+def main(output_csv_path: str) -> None:
+    quotes, authors = get_page_content()
     write_quotes_to_csv(output_csv_path, quotes)
+    write_authors_to_csv("authors.csv", authors)
 
 
 if __name__ == "__main__":
-    start = time.time()
-    asyncio.run(main("quotes.csv"))
-    end = time.time() - start
-    print(f"Time elapsed: {end} seconds")
+    main("quotes.csv")
