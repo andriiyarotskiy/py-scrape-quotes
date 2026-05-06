@@ -60,9 +60,10 @@ def parse_author_page(soup: Tag) -> Author:
     )
 
 
-def fetch_author(client: requests.Session, author_name: str) -> Author:
+def fetch_author(author_name: str) -> Author:
     url = f"{AUTHOR_URL}/{format_name(author_name)}"
-    response = client.get(url)
+    with requests.Session() as session:
+        response = session.get(url)
     soup = BeautifulSoup(response.content, "html.parser")
     return parse_author_page(soup)
 
@@ -86,10 +87,10 @@ def get_page_content() -> tuple[list[Quote], list[Author]]:
     all_quotes = []
     author_names = {}
 
-    with requests.Session() as client:
+    with requests.Session() as session:
         while True:
             request_url = urljoin(BASE_URL, f"/page/{page_num}/")
-            response = client.get(request_url)
+            response = session.get(request_url)
             soup = BeautifulSoup(response.content, "html.parser")
             page_quotes = soup.find_all("div", class_="quote")
 
@@ -104,14 +105,13 @@ def get_page_content() -> tuple[list[Quote], list[Author]]:
 
             page_num += 1
 
-    with requests.Session() as client:
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            fetched_authors = list(
-                executor.map(
-                    lambda name: fetch_author(client, name),
-                    author_names.keys()
-                )
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        fetched_authors = list(
+            executor.map(
+                fetch_author,
+                author_names.keys()
             )
+        )
 
     for name, author in zip(author_names.keys(), fetched_authors):
         author_names[name] = author
