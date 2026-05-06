@@ -84,8 +84,6 @@ def write_authors_to_csv(output_csv_path: str, authors: list[Author]) -> None:
 def get_page_content() -> tuple[list[Quote], list[Author]]:
     page_num = 1
     all_quotes = []
-    all_authors = []
-
     author_names = {}
 
     with requests.Session() as client:
@@ -108,11 +106,17 @@ def get_page_content() -> tuple[list[Quote], list[Author]]:
 
     with requests.Session() as client:
         with ThreadPoolExecutor(max_workers=5) as executor:
-            all_authors = executor.map(
-                lambda name: fetch_author(client, name),
-                author_names.keys()
+            fetched_authors = list(
+                executor.map(
+                    lambda name: fetch_author(client, name),
+                    author_names.keys()
+                )
             )
-    return all_quotes, list(all_authors)
+
+    for name, author in zip(author_names.keys(), fetched_authors):
+        author_names[name] = author
+
+    return all_quotes, list(author_names.values())
 
 
 def main(output_csv_path: str) -> None:
